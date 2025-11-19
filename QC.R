@@ -9,8 +9,8 @@ setwd("D:/ccr8/R/")
 
 rm(list = ls())
 
-ln <- read.csv(file = "D:/ccr8/lntreg.csv",row.names = 1,header = TRUE,stringsAsFactors = FALSE,check.names = FALSE, sep = ",")
-Heart <- read.csv(file = "D:/4.ccr8/Htreg.csv",row.names = 1,header = TRUE,stringsAsFactors = FALSE,check.names = FALSE, sep = ",")
+ln <- read.csv(file = "D:/ccr8/lnscRNA.csv",row.names = 1,header = TRUE,stringsAsFactors = FALSE,check.names = FALSE, sep = ",")
+Heart <- read.csv(file = "D:/4.ccr8/HscRNA.csv",row.names = 1,header = TRUE,stringsAsFactors = FALSE,check.names = FALSE, sep = ",")
 
 # Create Seurat Object
 ln <- CreateSeuratObject(counts = ln, project = "ln", min.cells = 3, min.features = 200)
@@ -21,69 +21,94 @@ ln$sample <- "LN"
 Heart$sample <- "Heart"
 
 #Merge
-Treg <- merge(ln,y = c(Heart),project = "Treg")
-saveRDS(Treg, "Treg_all.rds") 
-Treg
-table(Treg$orig.ident)
+scRNA <- merge(ln,y = c(Heart),project = "scRNA")
+saveRDS(scRNA, "scRNA_all.rds") 
+scRNA
+table(scRNA$orig.ident)
 
 ##
-Treg[["percent.mt"]] <- PercentageFeatureSet(Treg, pattern = "^mt-")
-Treg[["percent.rb"]] <- PercentageFeatureSet(Treg, pattern = "^Rp[sl]")
-Treg[["complexity"]] <- Treg$nFeature_RNA / Treg$nCount_RNA
+scRNA[["percent.mt"]] <- PercentageFeatureSet(scRNA, pattern = "^mt-")
+scRNA[["percent.rb"]] <- PercentageFeatureSet(scRNA, pattern = "^Rp[sl]")
+scRNA$Complexity <- log10(scRNA$nFeature_RNA / scRNA$nCount_RNA)
 
-dir.create("QC")
-theme.set2 = theme(axis.title.x=element_blank())
-plot.featrures = c("nFeature_RNA", "nCount_RNA","percent.mt", "percent.rb")
+sce <- scRNA
+sce <- as.SingleCellExperiment(sce)
+sce <- scDblFinder(sce)
+scRNA$Doublet_score <- sce$scDblFinder.score
+scRNA$scDblFinder_class <- sce$scDblFinder.class
+
+theme.set2 <- theme_bw() +
+  theme(
+    axis.title.x = element_blank(),
+    axis.text.x  = element_text(angle = 45, hjust = 1, size = 10),
+    axis.text.y  = element_text(size = 10),
+    strip.text   = element_text(size = 12, face = "bold"),
+    plot.title   = element_text(size = 12, face = "bold"),
+    legend.position = "none")
 group = "orig.ident"
+plot.features = c("nFeature_RNA", "nCount_RNA","percent.mt", 
+                   "Complexity","Doublet_score")
+plots = list()
+for(i in seq_along(plot.features)){
+  plots[[i]] = VlnPlot(scRNA,
+                       group.by = group,
+                       pt.size = 0,
+                       features = plot.features[i],
+                       cols = c("#71ACD8","#F4DA90" )) + 
+    theme.set2 + NoLegend()}
+violin <- wrap_plots(plots = plots, ncol = 5)
+dir.create("QC", showWarnings = FALSE)
+ggsave("QC/vlnplot_before_qc_all_metrics_H.pdf", 
+       plot = violin, width = 8, height = 2.5)
+
+## QC---------------------
+scRNA <- subset(
+  scRNA,
+  subset = 
+    nFeature_RNA > 500 &
+    nFeature_RNA < 5000 &
+    nCount_RNA < 30000 &
+    percent.mt < 5 &
+    percent.rb < 50 &
+    scDblFinder_class == "singlet")
 
 plots = list()
-for(i in seq_along(plot.featrures)){
-  plots[[i]] = VlnPlot(scRNA, group.by=group, pt.size = 0,
-                       features = plot.featrures[i]) + theme.set2 + NoLegend()}
-violin <- wrap_plots(plots = plots, nrow=2) 
-dir.create("QC")
-ggsave("QC/vlnplot_before_qc.pdf", plot = violin, width = 9, height = 8)
-
-
-##
-Treg <- subset(Treg, subset = nCount_RNA < 10000 & nFeature_RNA > 500 
-                & nFeature_RNA < 7500 & percent.mt < 10 & percent.rb < 40 )
-
-plots = list()
-for(i in seq_along(plot.featrures)){
-  plots[[i]] = VlnPlot(scRNA, group.by=group, pt.size = 0,
-                       features = plot.featrures[i]) + theme.set2 + NoLegend()}
-violin <- wrap_plots(plots = plots, nrow=2)  
-ggsave("QC/vlnplot_after_qc.pdf", plot = violin, width = 10, height = 8) 
+for(i in seq_along(plot.features)){
+  plots[[i]] = VlnPlot(scRNA,
+                       group.by = group,
+                       pt.size = 0,
+                       features = plot.features[i],
+                       cols = c("#71ACD8","#F4DA90")) + 
+    theme.set2 + NoLegend()}
+violin <- wrap_plots(plots = plots, ncol = 5)
+ggsave("QC/vlnplot_after_qc_all_metrics_H.pdf",
+       plot = violin, width = 8, height = 2.5)
 
 
 ### SCT
-Treg.intergrated <- SCTransform(Treg)
+scRNA.intergrated <- SCTransform(scRNA)
 
 ### PCA
-Treg.intergrated <- RunPCA(Treg.intergrated, npcs=50, verbose=FALSE)
+scRNA.intergrated <- RunPCA(scRNA.intergrated, npcs=50, verbose=FALSE)
 
 ### RunHarmony
-system.time({Treg.intergrated <- RunHarmony(Treg.intergrated, group.by.vars = "orig.ident",
+system.time({scRNA.intergrated <- RunHarmony(scRNA.intergrated, group.by.vars = "orig.ident",
                                             assay.use="SCT",max.iter.harmony = 20,lambda=1)})
 
-ElbowPlot(Treg.intergrated, ndims = 50)
-pc.num=1:20
+ElbowPlot(scRNA.intergrated, ndims = 50)
+pc.num=1:10
 
-Treg.intergrated <- FindNeighbors(Treg.intergrated, reduction = "harmony", dims = pc.num)
-Treg.intergrated <- FindClusters(Treg.intergrated, resolution = 0.6)
-Treg.intergrated <- RunUMAP(Treg.intergrated, reduction = "harmony", dims = pc.num)
+scRNA.intergrated <- FindNeighbors(scRNA.intergrated, reduction = "harmony", dims = pc.num)
+scRNA.intergrated <- FindClusters(scRNA.intergrated, resolution = 0.6)
+scRNA.intergrated <- RunUMAP(scRNA.intergrated, reduction = "harmony", dims = pc.num)
 
 colours_cluster = c("#71ACD8","#F4DA90", "#E9A66E","#C14F58", "#60C2A6","#DC7656","#DCE49F")
-DimPlot(Treg.intergrated, reduction = "umap", label = F, pt.size = 0.8,
+DimPlot(scRNA.intergrated, reduction = "umap", label = F, pt.size = 0.8,
         cols =colours_cluster) & NoAxes()& NoLegend()
 ggsave("umap.pdf",width = 3, height = 3, dpi=600)
 
-DimPlot(Treg.intergrated, split.by = "orig.ident", reduction='umap',label= F,ncol = 2, pt.size = 0.8,
-        cols =colours_cluster) & NoAxes()& NoLegend()
-ggsave("umap_split.pdf",width = 6, height = 3.2, dpi=600)
+saveRDS(scRNA.intergrated, "scRNA.intergrated.rds") 
 
-saveRDS(Treg.intergrated, "Treg.intergrated.rds") 
 
 
 
